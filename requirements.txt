@@ -2,3 +2,6 @@ numpy>=1.26
 Pillow>=10
 opencv-python-headless==4.11.0.86
 ncnn
+# client.py (HTTP + MQTT to the competition server)
+requests>=2
+paho-mqtt>=2,<3

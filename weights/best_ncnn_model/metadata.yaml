@@ -1,6 +1,6 @@
-description: Ultralytics YOLO26s-seg model trained on /content/coffee_yolo26_kd/dataset/data_kd_runtime.yaml
+description: Ultralytics YOLO26s-seg model trained on /content/coffee_day3_focus/day3_s_focus_v1/data_runtime.yaml
 author: Ultralytics
-date: "2026-11-19T06:21:16.801646+00:00"
+date: "2026-11-19T08:12:50.788634+00:00"
 version: "8.4.215"
 license: AGPL-3.0 License (https://ultralytics.com/license)
 docs: https://docs.ultralytics.com

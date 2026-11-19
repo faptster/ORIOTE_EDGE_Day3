@@ -9,3 +9,6 @@ opencv-python==4.11.0.86
 torch==2.15.0
 torchvision==0.29.2
 ultralytics==8.4.215
+# client.py --backend pt (HTTP + MQTT to the competition server)
+requests>=2
+paho-mqtt>=2,<3

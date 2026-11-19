@@ -12,7 +12,7 @@ source .venv/bin/activate
 python -m pip install --no-cache-dir --timeout 120 -r requirements.txt
 ```
 
-`requirements.txt` มีเฉพาะแพ็กเกจสำหรับ inference: `numpy`, `Pillow`, `opencv-python-headless`, `ncnn`
+`requirements.txt` มีแพ็กเกจสำหรับ inference: `numpy`, `Pillow`, `opencv-python-headless`, `ncnn` และสำหรับ `client.py`: `requests`, `paho-mqtt`
 
 ## ทำนาย
 
