@@ -8,8 +8,8 @@ def test_inference():
     out = []
 
     with ncnn.Net() as net:
-        net.load_param("/content/coffee_day2_final/runs/beans_20261118_144332/weights/best_ncnn_model/model.ncnn.param")
-        net.load_model("/content/coffee_day2_final/runs/beans_20261118_144332/weights/best_ncnn_model/model.ncnn.bin")
+        net.load_param("/content/coffee_s_day3_check/20261119_061711_728096/export_source_20261119_062116_237724/best_ncnn_model/model.ncnn.param")
+        net.load_model("/content/coffee_s_day3_check/20261119_061711_728096/export_source_20261119_062116_237724/best_ncnn_model/model.ncnn.bin")
 
         with net.create_extractor() as ex:
             ex.input("in0", ncnn.Mat(in0.squeeze(0).numpy()).clone())
