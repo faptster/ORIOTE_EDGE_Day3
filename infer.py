@@ -9,11 +9,16 @@ resolution inside each box, so results match infer_ultralytics.py byte for byte.
 Automatic ROI is a conservative light-paper heuristic; use --roi full for other backgrounds.
 Predicted masks keep their largest visible component with holes filled, so each polygon matches
 its seg_mask instance. Changes are reported on stderr. No downloads happen during inference.
+Outputs: seg_mask/<stem>.png, vis/<stem>.jpg, predictions.json, and mqtt/<stem>.json, the
+API_DOCS.md 2.1 scoreboard payload (image, latency_ms, counts, defect_ratio) that client.py publishes.
+Each run starts from a clean --out: the previous run's seg_mask/, vis/, mqtt/ and predictions.json
+are removed first (other files there are left alone); --keep keeps them.
 """
 from pathlib import Path
 import argparse
 import json
 import math
+import shutil
 import sys
 import time
 import cv2
@@ -21,10 +26,12 @@ import numpy as np
 from PIL import Image, ImageOps
 
 CLASSES = ['black', 'broken', 'good', 'husk', 'immature', 'parchment', 'shell']
+COUNT_KEYS = ['good', 'shell', 'black', 'husk', 'broken', 'parchment', 'immature']  # MQTT counts order (API_DOCS.md 2.1)
 PAD_VALUE = 114     # Ultralytics letterbox grey
 NMS_IOU = 0.5       # Ultralytics 8.4.215 default predict IoU (infer_ultralytics.py does not set iou)
 MAX_WH = 7680       # class offset for class-aware NMS
 MAX_NMS = 30000     # boxes kept before NMS
+OUTPUT_ITEMS = ('seg_mask', 'vis', 'mqtt', 'predictions.json')  # what a run writes, and clean_outputs removes
 
 
 def warn(message):
@@ -294,12 +301,69 @@ def nms(boxes, scores, iou_threshold):
     return np.array(keep, dtype=np.int64)
 
 
+def segment(model, rgb, imgsz, conf, roi, max_det):
+    """ROI crop, model and post-processing on one RGB image: (uint16 instance mask, objects)."""
+    x0, y0, x1, y1 = roi_box(rgb, roi)
+    detections = model.predict(rgb[y0:y1, x0:x1], imgsz, conf, max_det)
+    return output_instances(detections, rgb.shape[:2], (x0, y0))
+
+
+def mqtt_summary(image_name, objects, latency_ms):
+    """Scoreboard payload (API_DOCS.md 2.1): counts per class, defect_ratio = defects / all beans (0.0 if none)."""
+    counts = dict.fromkeys(COUNT_KEYS, 0)
+    for obj in objects:
+        counts[obj['class']] += 1
+    total = len(objects)
+    defect_ratio = round((total-counts['good'])/total, 4) if total else 0.0
+    return {'image': image_name, 'latency_ms': int(latency_ms), 'counts': counts, 'defect_ratio': defect_ratio}
+
+
+def check_destination(source, destination):
+    """Refuse an --out that is, contains, or would clean away the --input folder."""
+    if source == destination or source in destination.parents:
+        raise ValueError('Keep outputs outside the input folder')
+    for name in OUTPUT_ITEMS:
+        if source == destination/name or destination/name in source.parents:
+            raise ValueError(f'The input folder is inside {destination/name}, which each run clears')
+
+
+def clean_outputs(destination):
+    """Remove the previous run's outputs (OUTPUT_ITEMS only) so --out holds just this run."""
+    for name in OUTPUT_ITEMS:
+        path = Path(destination)/name
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+
+def save_mqtt(destination, stem, summary):
+    """mqtt/<stem>.json: the one-line JSON that client.py publishes."""
+    path = Path(destination)/'mqtt'/(stem+'.json')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary), encoding='utf-8')
+    return path
+
+
+def save_images(destination, stem, rgb, mask, objects, vis=True):
+    """seg_mask/<stem>.png and, with vis, the colour overlay vis/<stem>.jpg."""
+    for kind in ['seg_mask']+(['vis'] if vis else []):
+        (Path(destination)/kind).mkdir(parents=True, exist_ok=True)
+    Image.fromarray(mask).save(Path(destination)/'seg_mask'/(stem+'.png'))
+    if vis:
+        overlay = rgb.copy()
+        for obj in objects:
+            color = np.random.default_rng(obj['id']).integers(40, 240, 3)
+            fg = mask == obj['id']
+            overlay[fg] = (.6*rgb[fg]+.4*color).astype('uint8')
+        Image.fromarray(overlay).save(Path(destination)/'vis'/(stem+'.jpg'))
+
+
 def run(args):
     source, destination = Path(args.input).resolve(), Path(args.out).resolve()
     if not source.is_dir():
         raise FileNotFoundError(args.input)
-    if source == destination or source in destination.parents:
-        raise ValueError('Keep outputs outside the input folder')
+    check_destination(source, destination)
     files = sorted(p for p in source.iterdir() if p.is_file() and p.suffix.lower() in ('.jpg', '.jpeg', '.png'))
     if not files:
         raise ValueError('No supported input images')
@@ -324,26 +388,18 @@ def run(args):
         imgsz = fixed
     if args.runtime:
         print(f'Setup (import ncnn + load {param.parent.name}): {time.perf_counter()-started:.2f} s')
-    for kind in ['seg_mask']+(['vis'] if args.vis else []):
-        (destination/kind).mkdir(parents=True, exist_ok=True)
+    if not args.keep:
+        clean_outputs(destination)  # only after inputs and model checked out, so a failed run clears nothing
     records = []
     times = []
     for index, path in enumerate(files, 1):
         started = time.perf_counter()
         rgb = read_rgb(path)
-        x0, y0, x1, y1 = roi_box(rgb, roi)
-        crop = rgb[y0:y1, x0:x1]
-        detections = model.predict(crop, imgsz, conf, max_det)
-        mask, objects = output_instances(detections, rgb.shape[:2], (x0, y0))
-        Image.fromarray(mask).save(destination/'seg_mask'/(path.stem+'.png'))
+        mask, objects = segment(model, rgb, imgsz, conf, roi, max_det)
+        latency_ms = (time.perf_counter()-started)*1000  # read + ROI + predict + postprocess (no file writes)
+        save_mqtt(destination, path.stem, mqtt_summary(path.name, objects, latency_ms))
+        save_images(destination, path.stem, rgb, mask, objects, args.vis)
         records.append({'image_name': path.name, 'objects': objects})
-        if args.vis:
-            overlay = rgb.copy()
-            for obj in objects:
-                color = np.random.default_rng(obj['id']).integers(40, 240, 3)
-                fg = mask == obj['id']
-                overlay[fg] = (.6*rgb[fg]+.4*color).astype('uint8')
-            Image.fromarray(overlay).save(destination/'vis'/(path.stem+'.jpg'))
         times.append(time.perf_counter()-started)  # read + ROI + predict + postprocess + save
         if args.runtime:
             print(f'[{index}/{len(files)}] {path.name}: {len(objects)} object(s), {times[-1]:.3f} s')
@@ -367,6 +423,8 @@ def main():
     parser.add_argument('--vis', action='store_true', default=True)
     parser.add_argument('--no-vis', dest='vis', action='store_false')
     parser.add_argument('--runtime', action='store_true', help='print processing time per image')
+    parser.add_argument('--keep', action='store_true',
+                        help="keep the previous run's seg_mask/, vis/, mqtt/ in --out (default: clear them first)")
     args = parser.parse_args()
     try:
         run(args)

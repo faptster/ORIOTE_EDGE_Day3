@@ -24,7 +24,8 @@ python infer.py --input test/ --weights weights/ --out outputs/
 |---|---|
 | `--input` | โฟลเดอร์ภาพ อ่านเฉพาะไฟล์ชั้นบนสุด รองรับ `.jpg`, `.jpeg`, `.png` โดยไม่สนตัวพิมพ์เล็กใหญ่ เรียงตามชื่อไฟล์ก่อนประมวลผล ชื่อไฟล์ที่ตัดนามสกุลแล้ว (stem) ต้องไม่ซ้ำกัน |
 | `--weights` | โฟลเดอร์โมเดล (ดูหัวข้อ weights) |
-| `--out` | โฟลเดอร์ผลลัพธ์ ต้องไม่ใช่โฟลเดอร์ input และไม่อยู่ข้างใน ไฟล์ชื่อเดิมจะถูกเขียนทับ แต่ไฟล์อื่นจากรอบก่อนจะไม่ถูกลบ จึงควรใช้โฟลเดอร์ว่าง |
+| `--out` | โฟลเดอร์ผลลัพธ์ ต้องไม่ใช่โฟลเดอร์ input และไม่อยู่ข้างใน ทุกครั้งที่รันจะลบ `seg_mask/`, `vis/`, `mqtt/`, `predictions.json` ของรอบก่อนทิ้งก่อน (หลังตรวจ input และโหลดโมเดลผ่านแล้ว) ไฟล์อื่นในโฟลเดอร์ไม่ถูกแตะ |
+| `--keep` | ไม่ลบผลรอบก่อน ไฟล์ชื่อเดิมถูกเขียนทับ ไฟล์อื่นยังอยู่ |
 | `--roi auto\|full` | การตัดบริเวณเม็ดก่อนเข้าโมเดล ค่าเริ่มต้นอ่านจาก `inference_config.json` ใช้ `full` เมื่อพื้นหลังไม่ใช่กระดาษสีอ่อน |
 | `--imgsz`, `--conf` | ใช้แทนค่าใน `inference_config.json` |
 | `--no-vis` | ไม่สร้างภาพ `vis/` |
@@ -38,8 +39,12 @@ python infer.py --input test/ --weights weights/ --out outputs/
 outputs/
 ├── seg_mask/<stem>.png   # หนึ่งไฟล์ต่อภาพ: PNG uint16 ช่องเดียว ขนาดเท่าภาพหลังใช้ EXIF orientation
 ├── predictions.json      # UTF-8 หนึ่งรายการต่อภาพ: image_name และ objects [{id, class, polygon}]
+├── mqtt/<stem>.json      # JSON บรรทัดเดียวต่อภาพ สำหรับกระดานคะแนน MQTT: image, latency_ms, counts, defect_ratio
 └── vis/<stem>.jpg        # ภาพ overlay สีต่อเม็ด สำหรับดูด้วยตาเท่านั้น
 ```
+
+- `mqtt/<stem>.json`: `counts` นับเม็ดตาม `class` ใน `predictions.json` ครบ 7 คลาส `defect_ratio = (ทั้งหมด − good) / ทั้งหมด` ปัดทศนิยม 4 ตำแหน่ง (ไม่พบเม็ดเลย = `0.0`) `latency_ms` คือเวลาอ่านภาพจนได้ polygon (ROI, โมเดล, หลังประมวลผล) เป็นจำนวนเต็ม ms ไม่รวมเวลาเขียนไฟล์
+- `client.py` ดึงภาพจาก server ทีละภาพ ประมวลผลด้วยขั้นตอนเดียวกับ `infer.py` ส่ง record ของภาพนั้นใน `predictions.json` ไป `POST /api/v1/submit` แล้วเขียนผลลง `outputs/` (ล้างผลรอบก่อนทิ้งก่อนเขียน `outputs/` จึงมีเฉพาะภาพล่าสุด รอบที่ล้มก่อนได้ผล เช่น GET ได้ 403 จะไม่ลบของเดิม ใช้ `--keep` ถ้าต้องการสะสมหลายภาพ) และ publish `mqtt/<stem>.json` ขึ้น MQTT ไฟล์ถูกเขียนหลังส่ง HTTP เพื่อไม่ให้เวลาเขียนไฟล์ถูกนับในเวลาที่ server จับ
 
 - `seg_mask`: 0 = พื้นหลัง, 1..N = เม็ดที่ 1..N แต่ละพิกเซลเป็นของเม็ดเดียว ถ้าภาพไม่พบเม็ด PNG เป็น 0 ทั้งภาพ และ `objects` เป็น `[]`
 - `id` ใน `predictions.json` ตรงกับค่าของเม็ดนั้นใน PNG เรียงจากคะแนนสูงไปต่ำ `class` เป็นหนึ่งใน `black, broken, good, husk, immature, parchment, shell`

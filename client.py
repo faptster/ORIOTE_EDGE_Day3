@@ -5,8 +5,12 @@ Pipeline Workflow:
   1. GET Image via HTTP      -> Fetches image binary + 'X-Image-ID' + 'X-Image-Name'
   2. Process Image (Model)   -> infer.py pipeline (NCNN, or best.pt with --backend pt);
                                 the model is loaded + warmed up BEFORE step 1 (server timing)
-  3. Send HTTP Submission    -> Posts polygon predictions to /api/v1/submit
-  4. Send MQTT Submission    -> Publishes summary counts & defect_ratio via WebSocket MQTT
+  3. Send HTTP Submission    -> Posts this image's predictions.json record to /api/v1/submit,
+                                then writes the outputs like infer.py (--out, default outputs/;
+                                the previous run's are cleared first unless --keep):
+                                seg_mask/<stem>.png, vis/<stem>.jpg, mqtt/<stem>.json, predictions.json
+                                (written after the submit so disk time stays out of the server's clock)
+  4. Send MQTT Submission    -> Publishes mqtt/<stem>.json (counts & defect_ratio) via WebSocket MQTT
 
 IMPORTANT CREDENTIALS NOTE:
   - HTTP Bearer Token: Your team's LOGIN PASSWORD for the competition website.
@@ -44,7 +48,7 @@ import infer  # infer.py next to this file: NCNN model + the pre/post-processing
 # 1. CONFIGURATION (Set your defaults here)
 # ==============================================================================
 # HTTP Evaluation Server
-DEFAULT_HTTP_URL = "https://edgeai-tesa.c333m.site"          # Competition API Domain (e.g. https://api.yourdomain.com)
+DEFAULT_HTTP_URL = "http://10.209.10.103:8000"          # Competition API Domain (e.g. https://api.yourdomain.com)
 DEFAULT_HTTP_TOKEN = "MkZhGXAgolbt7Y6YEzH9tf"           # Team login password for the website
 
 # MQTT Broker (Summary Scores)
@@ -57,15 +61,13 @@ DEFAULT_EVENT = "1"                                 # Event ID (e.g. "1")
 # Model
 DEFAULT_WEIGHTS = str(Path(__file__).resolve().parent / "weights")  # NCNN export + inference_config.json + best.pt
 DEFAULT_BACKEND = "ncnn"                            # "ncnn" (infer.py) or "pt" (inferpt.py + best.pt)
+DEFAULT_OUT = "outputs"                             # seg_mask/, vis/, mqtt/, predictions.json (as infer.py --out)
 # ==============================================================================
 
 
 # ==============================================================================
 # 2. MODEL (infer.py pipeline: same ROI, letterbox, NMS, masks and polygons)
 # ==============================================================================
-COUNT_KEYS = ["good", "shell", "black", "husk", "broken", "parchment", "immature"]
-
-
 def load_model(backend: str, weights: str, device: str = "cpu"):
     """
     Load the model and weights/inference_config.json exactly as infer.py (ncnn) or
@@ -101,7 +103,8 @@ def load_model(backend: str, weights: str, device: str = "cpu"):
 
 def run_inference(model, cfg: dict, image_bytes: bytes, img_name: str):
     """
-    Run the model on the received image (same objects as infer.py writes for the same file).
+    Run infer.py's per-image processing on the received image (same results as
+    `python infer.py` gives for the same file).
 
     Accepts:
         model, cfg: from load_model()
@@ -109,37 +112,48 @@ def run_inference(model, cfg: dict, image_bytes: bytes, img_name: str):
         img_name (str): Original filename of the image (e.g. 'Parchment_test.jpg')
 
     Returns:
-        tuple (predictions_dict, mqtt_summary_dict, latency_ms)
+        tuple (rgb, mask, record, summary):
+        record  = this image's predictions.json entry {image_name, objects}  -> HTTP submit
+        summary = mqtt/<stem>.json {image, latency_ms, counts, defect_ratio} -> MQTT
     """
     start_time = time.perf_counter()
-
     rgb = infer.read_rgb(io.BytesIO(image_bytes))  # EXIF-aware RGB, as infer.py reads files
-    x0, y0, x1, y1 = infer.roi_box(rgb, cfg["roi"])
-    detections = model.predict(rgb[y0:y1, x0:x1], cfg["imgsz"], cfg["conf"], cfg["max_det"])
-    _, objects = infer.output_instances(detections, rgb.shape[:2], (x0, y0))
+    mask, objects = infer.segment(model, rgb, cfg["imgsz"], cfg["conf"], cfg["roi"], cfg["max_det"])
+    latency_ms = (time.perf_counter() - start_time) * 1000  # decode + ROI + model + postprocess, as infer.py
 
-    # 1. Prediction payload for HTTP Ground Truth evaluation (Polygon format)
-    http_predictions = {"image_name": img_name, "objects": objects}
+    record = {"image_name": img_name, "objects": objects}
+    summary = infer.mqtt_summary(img_name, objects, latency_ms)  # defect_ratio = (total - good) / total
+    return rgb, mask, record, summary
 
-    # 2. Defect counts and defect_ratio for MQTT Scoreboard
-    counts = {key: 0 for key in COUNT_KEYS}
-    for obj in objects:
-        counts[obj["class"]] += 1
 
-    total_beans = sum(counts.values())
-    defect_beans = total_beans - counts.get("good", 0)
-    defect_ratio = round(defect_beans / total_beans, 4) if total_beans > 0 else 0.0
+def save_outputs(out_dir: str, img_name: str, rgb, mask, record: dict, summary: dict, vis: bool = True):
+    """
+    Write this image's outputs in infer.py's layout:
+        <out>/seg_mask/<stem>.png, <out>/vis/<stem>.jpg, <out>/mqtt/<stem>.json and its
+        record in <out>/predictions.json (only this image after main()'s clean; with --keep
+        it is added, or replaces the record with the same image name).
 
-    latency_ms = int((time.perf_counter() - start_time) * 1000)
+    Returns:
+        Path of mqtt/<stem>.json
+    """
+    out = Path(out_dir)
+    stem = Path(img_name).stem
+    mqtt_path = infer.save_mqtt(out, stem, summary)
+    infer.save_images(out, stem, rgb, mask, record["objects"], vis)
 
-    mqtt_summary = {
-        "image": img_name,
-        "latency_ms": latency_ms,
-        "counts": counts,
-        "defect_ratio": defect_ratio
-    }
-
-    return http_predictions, mqtt_summary, latency_ms
+    pred_path = out / "predictions.json"
+    records = []
+    if pred_path.is_file():
+        try:
+            records = json.loads(pred_path.read_text(encoding="utf-8"))
+        except ValueError:
+            print(f"    [!] {pred_path} was not valid JSON; starting a new one")
+        if not isinstance(records, list):
+            records = []
+    records = [r for r in records if not (isinstance(r, dict) and r.get("image_name") == record["image_name"])]
+    records.append(record)
+    pred_path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+    return mqtt_path
 
 
 def publish_mqtt(host: str, team_id: str, mqtt_key: str, track: str, event: str, payload_dict: dict):
@@ -221,6 +235,12 @@ def main():
     parser.add_argument("--backend", choices=["ncnn", "pt"], default=DEFAULT_BACKEND, help="ncnn = infer.py, pt = inferpt.py (best.pt)")
     parser.add_argument("--weights", default=DEFAULT_WEIGHTS, help="weights folder (or .pt file for --backend pt)")
     parser.add_argument("--device", default="cpu", help="torch device for --backend pt (cpu, cuda)")
+    parser.add_argument("--out", default=DEFAULT_OUT, help="outputs folder (seg_mask/, vis/, mqtt/, predictions.json)")
+    parser.add_argument("--no-vis", dest="vis", action="store_false", help="do not write vis/<stem>.jpg")
+    parser.add_argument("--keep", action="store_true",
+                        help="keep previous outputs and add this image to predictions.json (default: start --out fresh)")
+    parser.add_argument("--latency", action="store_true",
+                        help="print the time from the GET image request to the HTTP submit response (and the MQTT ack)")
     args = parser.parse_args()
 
     http_url = args.http_url.rstrip("/")
@@ -261,12 +281,14 @@ def main():
     http_headers = {"Authorization": f"Bearer {http_token}"}
 
     t_start_req = time.time()
+    marks = {"get": time.perf_counter()}  # --latency clock: starts as the GET request is sent
     try:
         img_resp = requests.get(f"{http_url}/api/v1/image", headers=http_headers, timeout=30,
                                 params={"mode": args.mode} if args.mode else None)
     except requests.exceptions.RequestException as e:
         print(f"[-] Connection Error: {e}")
         sys.exit(1)
+    marks["received"] = time.perf_counter()  # requests.get returns after the whole image body is read
 
     if img_resp.status_code != 200:
         print(f"[-] Failed to fetch image (HTTP {img_resp.status_code}): {img_resp.text}")
@@ -275,6 +297,7 @@ def main():
     image_bytes = img_resp.content
     img_id = img_resp.headers.get("X-Image-ID")
     img_name = img_resp.headers.get("X-Image-Name", "image.jpg")
+    file_name = Path(img_name).name or "image.jpg"  # local file names only (no folders from the header)
     mode = img_resp.headers.get("X-Mode", "train")
     dl_time = time.time() - t_start_req
 
@@ -289,32 +312,46 @@ def main():
     # STEP 2: Run Model Inference
     # --------------------------------------------------------------------------
     print(f"\n[2/4] Running model inference on '{img_name}'...")
-    http_predictions, mqtt_summary, latency_ms = run_inference(model, cfg, image_bytes, img_name)
-    print(f"[+] Inference complete ({latency_ms} ms)")
-    print(f"    - Detected objects: {len(http_predictions.get('objects', []))}")
-    print(f"    - Defect Ratio:     {mqtt_summary['defect_ratio']}")
+    rgb, mask, record, summary = run_inference(model, cfg, image_bytes, img_name)
+    marks["inferred"] = time.perf_counter()
+    print(f"[+] Inference complete ({summary['latency_ms']} ms)")
+    print(f"    - Detected objects: {len(record['objects'])}")
+    print(f"    - Defect Ratio:     {summary['defect_ratio']}")
 
     # --------------------------------------------------------------------------
-    # STEP 3: Submit Results to HTTP Server
+    # STEP 3: Submit Results to HTTP Server (this image's predictions.json record)
     # --------------------------------------------------------------------------
     print(f"\n[3/4] Submitting predictions to HTTP server ({http_url}/api/v1/submit)...")
     submit_payload = {
         "img_id": img_id,
-        "predictions": http_predictions
+        "predictions": record
     }
-    
+
+    sub_resp = sub_error = None
     try:
         sub_resp = requests.post(f"{http_url}/api/v1/submit", json=submit_payload, headers=http_headers, timeout=30)
     except requests.exceptions.RequestException as e:
-        print(f"[-] HTTP Submit Error: {e}")
-        sys.exit(1)
+        sub_error = e
+    marks["submitted"] = time.perf_counter()  # submit response received
 
-    # Save image locally for inspection (after the submit, so the disk write is not in the server-timed window)
+    # Write outputs + the received image AFTER the submit (disk time stays out of the server-timed window).
+    # Fresh outputs per run: the previous run's are cleared only now, once there are new results to write.
+    if not args.keep:
+        infer.clean_outputs(args.out)
+        print(f"    - Cleared previous outputs in {Path(args.out)} (--keep to keep them)")
+    mqtt_path = save_outputs(args.out, file_name, rgb, mask, record, summary, args.vis)
+    print(f"    - Saved outputs:  {Path(args.out) / 'predictions.json'}, {mqtt_path}, "
+          f"seg_mask/{mqtt_path.stem}.png" + (f", vis/{mqtt_path.stem}.jpg" if args.vis else ""))
     save_folder = Path("downloaded_images")
     save_folder.mkdir(exist_ok=True)
-    save_path = save_folder / img_name
+    save_path = save_folder / file_name
     save_path.write_bytes(image_bytes)
     print(f"    - Saved file:     {save_path}")
+    marks["saved"] = time.perf_counter()
+
+    if sub_error is not None:
+        print(f"[-] HTTP Submit Error: {sub_error}")
+        sys.exit(1)
 
     if sub_resp.status_code != 200:
         print(f"[-] HTTP Submission rejected (HTTP {sub_resp.status_code}): {sub_resp.text}")
@@ -326,14 +363,16 @@ def main():
     print(f"    - Received At:    {sub_data.get('received_at')}")
 
     # --------------------------------------------------------------------------
-    # STEP 4: Send Summary to MQTT Broker
+    # STEP 4: Send Summary to MQTT Broker (the mqtt/<stem>.json just written)
     # --------------------------------------------------------------------------
+    mqtt_ok = None
     if args.skip_mqtt:
         print("\n[4/4] MQTT sending skipped (--skip-mqtt flag active).")
     else:
         print(f"\n[4/4] Publishing summary to MQTT Broker ({args.mqtt_host}:443/mqtt/)...")
-        print("    Payload to publish:")
-        print(f"    {json.dumps(mqtt_summary, indent=4)}")
+        mqtt_payload = json.loads(mqtt_path.read_text(encoding="utf-8"))
+        print(f"    Payload to publish ({mqtt_path}):")
+        print(f"    {json.dumps(mqtt_payload, indent=4)}")
 
         try:
             publish_mqtt(
@@ -342,11 +381,32 @@ def main():
                 mqtt_key=mqtt_key,
                 track=args.track,
                 event=args.event,
-                payload_dict=mqtt_summary
+                payload_dict=mqtt_payload
             )
+            mqtt_ok = True
             print(f"[+] MQTT Submission COMPLETE for topic: /event/<MQTT_KEY>/{args.track}/{args.event}")
         except Exception as e:
+            mqtt_ok = False
             print(f"[-] MQTT Publish Error: {e}")
+        marks["mqtt"] = time.perf_counter()  # broker PUBACK received (or the publish failed)
+
+    if args.latency:
+        rows = [
+            ("1. GET image (request -> body received)", "get", "received", ""),
+            ("2. Inference (decode + model + post)", "received", "inferred", f"MQTT latency_ms = {summary['latency_ms']}"),
+            ("3. HTTP submit (POST -> 200 response)", "inferred", "submitted", ""),
+            ("=> GET -> result submitted (1+2+3)", "get", "submitted",
+             f"server duration_seconds = {sub_data.get('duration_seconds')} s"),
+            ("4. Write outputs + downloaded image", "submitted", "saved", ""),
+        ]
+        if "mqtt" in marks:
+            rows += [("5. MQTT publish (connect -> PUBACK)", "saved", "mqtt", "" if mqtt_ok else "FAILED"),
+                     ("=> GET -> MQTT " + ("acknowledged" if mqtt_ok else "failed"), "get", "mqtt", "")]
+        print("\n" + "-" * 70)
+        print(f"⏱  Latency for '{img_name}' (clock starts when the GET image request is sent):")
+        for label, start, end, note in rows:
+            print(f"  {label:<40}{(marks[end] - marks[start]) * 1000:9.1f} ms" + (f"   ({note})" if note else ""))
+        print("-" * 70)
 
     # Query latest stats
     try:

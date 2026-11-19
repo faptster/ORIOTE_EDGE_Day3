@@ -4,7 +4,7 @@ Run: python inferpt.py --input test/ --weights weights/ --out outputs_pt/ [--run
 --weights is a folder holding best.pt (or exactly one .pt) or a path to a .pt file; the optional
 inference_config.json next to it (imgsz, conf, roi, max_det) is read as in infer.py.
 Everything except the network forward comes from infer.py: ROI, letterbox (fixed imgsz x imgsz),
-class-aware NMS at IoU 0.5, retina masks inside each box, polygon clean-up, seg_mask/vis/predictions.json.
+class-aware NMS at IoU 0.5, retina masks inside each box, polygon clean-up, seg_mask/vis/predictions.json/mqtt.
 On the same images it reproduces infer.py's NCNN results up to float rounding.
 Needs torch and ultralytics==8.4.215 (to unpickle the checkpoint); infer.py does not.
 """
@@ -14,11 +14,9 @@ import json
 import math
 import sys
 import time
-import numpy as np
-from PIL import Image
 
 import infer
-from infer import CLASSES, read_rgb, roi_box, output_instances
+from infer import CLASSES, read_rgb, segment, mqtt_summary, save_mqtt, save_images
 
 
 def local_pt(weights):
@@ -73,8 +71,7 @@ def run(args):
     source, destination = Path(args.input).resolve(), Path(args.out).resolve()
     if not source.is_dir():
         raise FileNotFoundError(args.input)
-    if source == destination or source in destination.parents:
-        raise ValueError('Keep outputs outside the input folder')
+    infer.check_destination(source, destination)
     files = sorted(p for p in source.iterdir() if p.is_file() and p.suffix.lower() in ('.jpg', '.jpeg', '.png'))
     if not files:
         raise ValueError('No supported input images')
@@ -99,26 +96,18 @@ def run(args):
         imgsz = fixed
     if args.runtime:
         print(f'Setup (import torch + load {pt.name} on {model.device}): {time.perf_counter()-started:.2f} s')
-    for kind in ['seg_mask']+(['vis'] if args.vis else []):
-        (destination/kind).mkdir(parents=True, exist_ok=True)
+    if not args.keep:
+        infer.clean_outputs(destination)  # only after inputs and model checked out, so a failed run clears nothing
     records = []
     times = []
     for index, path in enumerate(files, 1):
         started = time.perf_counter()
         rgb = read_rgb(path)
-        x0, y0, x1, y1 = roi_box(rgb, roi)
-        crop = rgb[y0:y1, x0:x1]
-        detections = model.predict(crop, imgsz, conf, max_det)
-        mask, objects = output_instances(detections, rgb.shape[:2], (x0, y0))
-        Image.fromarray(mask).save(destination/'seg_mask'/(path.stem+'.png'))
+        mask, objects = segment(model, rgb, imgsz, conf, roi, max_det)
+        latency_ms = (time.perf_counter()-started)*1000  # read + ROI + predict + postprocess (no file writes)
+        save_mqtt(destination, path.stem, mqtt_summary(path.name, objects, latency_ms))
+        save_images(destination, path.stem, rgb, mask, objects, args.vis)
         records.append({'image_name': path.name, 'objects': objects})
-        if args.vis:
-            overlay = rgb.copy()
-            for obj in objects:
-                color = np.random.default_rng(obj['id']).integers(40, 240, 3)
-                fg = mask == obj['id']
-                overlay[fg] = (.6*rgb[fg]+.4*color).astype('uint8')
-            Image.fromarray(overlay).save(destination/'vis'/(path.stem+'.jpg'))
         times.append(time.perf_counter()-started)  # read + ROI + predict + postprocess + save
         if args.runtime:
             print(f'[{index}/{len(files)}] {path.name}: {len(objects)} object(s), {times[-1]:.3f} s')
@@ -143,6 +132,8 @@ def main():
     parser.add_argument('--vis', action='store_true', default=True)
     parser.add_argument('--no-vis', dest='vis', action='store_false')
     parser.add_argument('--runtime', action='store_true', help='print processing time per image')
+    parser.add_argument('--keep', action='store_true',
+                        help="keep the previous run's seg_mask/, vis/, mqtt/ in --out (default: clear them first)")
     args = parser.parse_args()
     try:
         run(args)

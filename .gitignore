@@ -2,6 +2,7 @@
 venv
 venvpt
 test
+test_old
 outputs
 __pycache__
 downloaded_images
