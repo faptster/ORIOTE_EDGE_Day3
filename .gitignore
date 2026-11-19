@@ -1,0 +1,6 @@
+*.zip
+venv
+venvpt
+test
+outputs
+__pycache__

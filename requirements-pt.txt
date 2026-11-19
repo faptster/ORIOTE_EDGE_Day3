@@ -1,0 +1,11 @@
+# For inferpt.py (weights/best.pt via PyTorch). infer.py (NCNN) only needs requirements.txt.
+# Install into its own venv: Ultralytics requires opencv-python, which clashes with the
+# opencv-python-headless of requirements.txt (both provide the cv2 module).
+# CPU torch wheels; drop this line to get the default build (CUDA on Linux) for --device cuda.
+--extra-index-url https://download.pytorch.org/whl/cpu
+numpy>=1.26
+Pillow>=10
+opencv-python==4.11.0.86
+torch==2.15.0
+torchvision==0.29.2
+ultralytics==8.4.215
