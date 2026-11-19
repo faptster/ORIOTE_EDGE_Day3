@@ -16,7 +16,7 @@ import sys
 import time
 
 import infer
-from infer import CLASSES, read_rgb, segment, mqtt_summary, save_mqtt, save_images
+from infer import CLASSES
 
 
 def local_pt(weights):
@@ -98,26 +98,7 @@ def run(args):
         print(f'Setup (import torch + load {pt.name} on {model.device}): {time.perf_counter()-started:.2f} s')
     if not args.keep:
         infer.clean_outputs(destination)  # only after inputs and model checked out, so a failed run clears nothing
-    records = []
-    times = []
-    for index, path in enumerate(files, 1):
-        started = time.perf_counter()
-        rgb = read_rgb(path)
-        mask, objects = segment(model, rgb, imgsz, conf, roi, max_det)
-        latency_ms = (time.perf_counter()-started)*1000  # read + ROI + predict + postprocess (no file writes)
-        save_mqtt(destination, path.stem, mqtt_summary(path.name, objects, latency_ms))
-        save_images(destination, path.stem, rgb, mask, objects, args.vis)
-        records.append({'image_name': path.name, 'objects': objects})
-        times.append(time.perf_counter()-started)  # read + ROI + predict + postprocess + save
-        if args.runtime:
-            print(f'[{index}/{len(files)}] {path.name}: {len(objects)} object(s), {times[-1]:.3f} s')
-    (destination/'predictions.json').write_text(json.dumps(records, ensure_ascii=False), encoding='utf-8')
-    if args.runtime:
-        rest = times[1:] or times
-        print(f'Time per image: mean {sum(times)/len(times):.3f} s, max {max(times):.3f} s, '
-              f'total {sum(times):.2f} s for {len(times)} image(s); '
-              f'mean without the first (warm-up) image {sum(rest)/len(rest):.3f} s')
-    print(f'Saved {len(records)} images to {destination}')
+    infer.process_images(model, files, destination, imgsz, conf, roi, max_det, args)  # same loop and reports as infer.py
 
 
 def main():
@@ -132,6 +113,8 @@ def main():
     parser.add_argument('--vis', action='store_true', default=True)
     parser.add_argument('--no-vis', dest='vis', action='store_false')
     parser.add_argument('--runtime', action='store_true', help='print processing time per image')
+    parser.add_argument('--latency', action='store_true',
+                        help='print per image: read + inference = the latency_ms in mqtt/<stem>.json, then file writes and total')
     parser.add_argument('--keep', action='store_true',
                         help="keep the previous run's seg_mask/, vis/, mqtt/ in --out (default: clear them first)")
     args = parser.parse_args()

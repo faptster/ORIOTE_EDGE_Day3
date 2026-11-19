@@ -30,6 +30,7 @@ python infer.py --input test/ --weights weights/ --out outputs/
 | `--imgsz`, `--conf` | ใช้แทนค่าใน `inference_config.json` |
 | `--no-vis` | ไม่สร้างภาพ `vis/` |
 | `--runtime` | พิมพ์เวลาโหลดโมเดล เวลาต่อภาพ (อ่านภาพจนบันทึกไฟล์เสร็จ) และสรุปท้ายรัน ไม่เปลี่ยนผลลัพธ์ |
+| `--latency` | พิมพ์เวลาแยกขั้นต่อภาพ: อ่านภาพ + inference = `latency_ms` ที่เขียนใน `mqtt/<stem>.json` แล้วตามด้วยเวลาเขียนไฟล์และเวลารวม พร้อมสรุป mean/min/max ท้ายรัน ไม่เปลี่ยนผลลัพธ์ |
 
 สำเร็จจะจบด้วย exit code 0 กรณีหา input/weights ไม่พบ ไม่มีภาพ อ่านภาพไม่ได้ หรือโมเดลไม่ถูกต้อง จะพิมพ์ `ERROR: ...` ทาง stderr และจบด้วย exit code 1
 
