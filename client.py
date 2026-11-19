@@ -48,7 +48,7 @@ import infer  # infer.py next to this file: NCNN model + the pre/post-processing
 # 1. CONFIGURATION (Set your defaults here)
 # ==============================================================================
 # HTTP Evaluation Server
-DEFAULT_HTTP_URL = "http://10.209.10.103:8000"          # Competition API Domain (e.g. https://api.yourdomain.com)
+DEFAULT_HTTP_URL = "https://edgeai-tesa.c333m.site"          # Competition API Domain (e.g. https://api.yourdomain.com)
 DEFAULT_HTTP_TOKEN = "MkZhGXAgolbt7Y6YEzH9tf"           # Team login password for the website
 
 # MQTT Broker (Summary Scores)
