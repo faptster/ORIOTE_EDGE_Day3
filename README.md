@@ -64,7 +64,7 @@ weights/
 └── best.pt                   # checkpoint PyTorch (infer.py ไม่ได้ใช้ เก็บไว้สำหรับ export ใหม่)
 ```
 
-`infer.py` ใช้โฟลเดอร์ย่อยใน `weights/` ที่มีไฟล์ `.param` และ `.bin` ซึ่งต้องมีเพียงโฟลเดอร์เดียว ชื่อคลาสใน `metadata.yaml` ต้องเป็น 7 คลาสตามลำดับ `black, broken, good, husk, immature, parchment, shell` ไม่เช่นนั้นจะหยุดพร้อม error
+`--weights` (ทั้ง `infer.py` และ `client.py`) ชี้ได้สองแบบ: โฟลเดอร์ที่มีโฟลเดอร์ย่อย NCNN อยู่ข้างในเพียงโฟลเดอร์เดียว เช่น `--weights weights/` หรือชี้ที่โฟลเดอร์ export ตรง ๆ เช่น `--weights weights/best_ncnn_model/` ซึ่งใช้เลือกโมเดลได้เมื่อมีหลายโมเดล `inference_config.json` หาในโฟลเดอร์ที่ระบุก่อน ถ้าไม่มีจะหาข้างโมเดลและโฟลเดอร์ถัดขึ้นไปหนึ่งชั้น `infer.py` ใช้โฟลเดอร์ export ที่มีไฟล์ `.param` และ `.bin` ชื่อคลาสใน `metadata.yaml` ต้องเป็น 7 คลาสตามลำดับ `black, broken, good, husk, immature, parchment, shell` ไม่เช่นนั้นจะหยุดพร้อม error
 
 | คีย์ใน `inference_config.json` | ค่าที่ใช้ | ความหมาย |
 |---|---|---|

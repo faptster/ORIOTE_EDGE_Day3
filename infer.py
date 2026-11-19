@@ -123,18 +123,33 @@ def output_instances(detections, shape, offset=(0, 0)):
 
 
 def local_ncnn(folder):
+    """--weights is either the folder that holds one NCNN export subfolder (weights/) or that export
+    folder itself (weights/best_ncnn_model/). Returns its .param file."""
     folder = Path(folder).resolve()
     if not folder.is_dir():
         raise FileNotFoundError('--weights must be a local directory')
-    exports = sorted(p for p in folder.iterdir() if p.is_dir() and list(p.glob('*.param')) and list(p.glob('*.bin')))
+    is_export = lambda p: any(not q.name.endswith('.pnnx.param') for q in p.glob('*.param')) and list(p.glob('*.bin'))
+    exports = [folder] if is_export(folder) else sorted(p for p in folder.iterdir() if p.is_dir() and is_export(p))
     if len(exports) > 1:
-        raise ValueError('More than one NCNN export found; keep one model in weights/')
+        raise ValueError(f'More than one NCNN export in {folder} ({", ".join(p.name for p in exports)}); '
+                         'keep one, or pass the export folder itself as --weights')
     if not exports:
-        raise FileNotFoundError('Expected one exported NCNN model subfolder in weights/')
+        raise FileNotFoundError(f'No NCNN model (.param + .bin) in {folder} or its subfolders')
     params = [p for p in sorted(exports[0].glob('*.param')) if not p.name.endswith('.pnnx.param')]
     if len(params) != 1:
         raise ValueError(f'Expected one .param file in {exports[0]}')
     return params[0]
+
+
+def find_config(weights, model_file):
+    """inference_config.json from the --weights folder, else next to the model or one level up
+    (--weights weights/best_ncnn_model/ still finds weights/inference_config.json). Returns (dict, path or None)."""
+    model_file = Path(model_file).resolve()
+    for folder in (Path(weights).resolve(), model_file.parent, model_file.parent.parent):
+        path = folder/'inference_config.json'
+        if path.is_file():
+            return json.loads(path.read_text()), path
+    return {}, None
 
 
 def read_metadata(path):
@@ -370,8 +385,7 @@ def run(args):
     if len({p.stem.casefold() for p in files}) != len(files):
         raise ValueError('Duplicate input stems would overwrite output PNGs')
     param = local_ncnn(args.weights)
-    config_path = Path(args.weights)/'inference_config.json'
-    config = json.loads(config_path.read_text()) if config_path.is_file() else {}
+    config, _ = find_config(args.weights, param)
     imgsz = args.imgsz if args.imgsz is not None else int(config.get('imgsz', 640))
     conf = args.conf if args.conf is not None else float(config.get('conf', .25))
     if imgsz <= 0 or not 0 <= conf <= 1:

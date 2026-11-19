@@ -10,7 +10,6 @@ Needs torch and ultralytics==8.4.215 (to unpickle the checkpoint); infer.py does
 """
 from pathlib import Path
 import argparse
-import json
 import math
 import sys
 import time
@@ -78,8 +77,7 @@ def run(args):
     if len({p.stem.casefold() for p in files}) != len(files):
         raise ValueError('Duplicate input stems would overwrite output PNGs')
     pt = local_pt(args.weights)
-    config_path = pt.parent/'inference_config.json'
-    config = json.loads(config_path.read_text()) if config_path.is_file() else {}
+    config, _ = infer.find_config(args.weights, pt)
     imgsz = args.imgsz if args.imgsz is not None else int(config.get('imgsz', 640))
     conf = args.conf if args.conf is not None else float(config.get('conf', .25))
     if imgsz <= 0 or not 0 <= conf <= 1:

@@ -59,7 +59,7 @@ DEFAULT_TRACK = "EdgeAI"                            # "Embedded", "EdgeAI", or "
 DEFAULT_EVENT = "1"                                 # Event ID (e.g. "1")
 
 # Model
-DEFAULT_WEIGHTS = str(Path(__file__).resolve().parent / "weights")  # NCNN export + inference_config.json + best.pt
+DEFAULT_WEIGHTS = str(Path(__file__).resolve().parent / "weights")  # or --weights <folder>: weights/, weights/best_ncnn_model, ...
 DEFAULT_BACKEND = "ncnn"                            # "ncnn" (infer.py) or "pt" (inferpt.py + best.pt)
 DEFAULT_OUT = "outputs"                             # seg_mask/, vis/, mqtt/, predictions.json (as infer.py --out)
 # ==============================================================================
@@ -79,13 +79,15 @@ def load_model(backend: str, weights: str, device: str = "cpu"):
     """
     if backend == "pt":
         import inferpt  # needs torch + ultralytics (requirements-pt.txt)
-        pt_path = inferpt.local_pt(weights)
-        model, folder = inferpt.PtSegmenter(pt_path, device), pt_path.parent
+        model_file = inferpt.local_pt(weights)
+        model = inferpt.PtSegmenter(model_file, device)
     else:
-        model, folder = infer.NcnnSegmenter(infer.local_ncnn(weights)), Path(weights)
+        model_file = infer.local_ncnn(weights)  # weights/ (one NCNN export inside) or the export folder itself
+        model = infer.NcnnSegmenter(model_file)
 
-    config_path = folder / "inference_config.json"
-    config = json.loads(config_path.read_text()) if config_path.is_file() else {}
+    config, config_path = infer.find_config(weights, model_file)  # --weights folder, else next to the model
+    print(f"    - Model file:  {model_file}")
+    print(f"    - Config file: {config_path or 'none found, using defaults'}")
     cfg = {
         "imgsz": int(config.get("imgsz", 640)),
         "conf": float(config.get("conf", 0.25)),
@@ -233,7 +235,9 @@ def main():
     parser.add_argument("--skip-mqtt", action="store_true", help="Skip MQTT publishing step")
     parser.add_argument("--mode", choices=["train", "test"], default=None, help="?mode= for GET image (default: server's open mode)")
     parser.add_argument("--backend", choices=["ncnn", "pt"], default=DEFAULT_BACKEND, help="ncnn = infer.py, pt = inferpt.py (best.pt)")
-    parser.add_argument("--weights", default=DEFAULT_WEIGHTS, help="weights folder (or .pt file for --backend pt)")
+    parser.add_argument("--weights", default=DEFAULT_WEIGHTS,
+                        help="model folder: weights/ (holds one NCNN export), the NCNN export folder itself "
+                             "(weights/best_ncnn_model), or for --backend pt a folder with best.pt or a .pt file")
     parser.add_argument("--device", default="cpu", help="torch device for --backend pt (cpu, cuda)")
     parser.add_argument("--out", default=DEFAULT_OUT, help="outputs folder (seg_mask/, vis/, mqtt/, predictions.json)")
     parser.add_argument("--no-vis", dest="vis", action="store_false", help="do not write vis/<stem>.jpg")
