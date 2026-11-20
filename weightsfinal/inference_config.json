@@ -1,0 +1,6 @@
+{
+  "imgsz": 640,
+  "conf": 0.35,
+  "roi": "auto",
+  "max_det": 500
+}
