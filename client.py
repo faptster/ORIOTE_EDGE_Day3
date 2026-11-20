@@ -48,7 +48,7 @@ import infer  # infer.py next to this file: NCNN model + the pre/post-processing
 # 1. CONFIGURATION (Set your defaults here)
 # ==============================================================================
 # HTTP Evaluation Server
-DEFAULT_HTTP_URL = "http://172.30.67.103:8000"          # Competition API Domain (e.g. https://api.yourdomain.com)
+DEFAULT_HTTP_URL = "https://edgeai-tesa.c333m.site"          # Competition API Domain (e.g. https://api.yourdomain.com)
 DEFAULT_HTTP_TOKEN = "MkZhGXAgolbt7Y6YEzH9tf"           # Team login password for the website
 
 # MQTT Broker (Summary Scores)
@@ -56,7 +56,7 @@ DEFAULT_MQTT_HOST = "tesa-score.c333m.site"         # Hostname only (no https://
 DEFAULT_TEAM_ID = "TGR-17"                         # Team ID (e.g. TEAM_01)
 DEFAULT_MQTT_KEY = "2846058a9e8c42979ec452966dfce34bd1e0d7939d6e4fa2a5e3f6a57e421109"        # Generated on website under My Team
 DEFAULT_TRACK = "EdgeAI"                            # "Embedded", "EdgeAI", or "Market"
-DEFAULT_EVENT = "1"                                 # Event ID (e.g. "1")
+DEFAULT_EVENT = "Tesa2026-EdgeAI"                                 # Event ID (e.g. "1")
 
 # Model
 DEFAULT_WEIGHTS = str(Path(__file__).resolve().parent / "weights")  # or --weights <folder>: weights/, weights/best_ncnn_model, ...
